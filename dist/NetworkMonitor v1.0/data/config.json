@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "install_date": "2026-03-25 11:27:19",
+  "install_dir": "D:\\AI\\product\\networkMonitor\\v1.0.0\\dist\\NetworkMonitor v1.0",
+  "data_dir": "D:\\AI\\product\\networkMonitor\\v1.0.0\\dist\\NetworkMonitor v1.0\\data",
+  "log_dir": "D:\\AI\\product\\networkMonitor\\v1.0.0\\dist\\NetworkMonitor v1.0\\logs",
+  "db_path": "D:\\AI\\product\\networkMonitor\\v1.0.0\\dist\\NetworkMonitor v1.0\\data\\network_monitor.db"
+}
