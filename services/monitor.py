@@ -26,6 +26,8 @@ class NetworkMonitorThread(QThread):
     # 最多缓存 5000 个已见连接 key，防止内存无限增长
     _SEEN_MAX = 5000
     _SEEN_TRIM = 2000
+    # 进程名缓存限制（防止无限增长）
+    _PROC_CACHE_MAX = 1000
 
     def __init__(
         self,
@@ -68,6 +70,17 @@ class NetworkMonitorThread(QThread):
         # 裁剪 seen_keys 防止无限增长
         if len(self._seen_keys) > self._SEEN_MAX:
             self._seen_keys = set(list(self._seen_keys)[-self._SEEN_TRIM:])
+
+        # 裁剪进程名缓存防止无限增长（保留最近 1000 个）
+        if len(self._proc_cache) > self._PROC_CACHE_MAX:
+            # 随机移除 20% 的缓存，避免一次性清空导致频繁查询
+            import random
+            keys_to_remove = random.sample(
+                list(self._proc_cache.keys()),
+                len(self._proc_cache) // 5
+            )
+            for k in keys_to_remove:
+                del self._proc_cache[k]
 
     def _process_conn(self, conn):
         try:

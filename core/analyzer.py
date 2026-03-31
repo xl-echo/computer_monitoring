@@ -7,6 +7,7 @@ core/analyzer.py
 
 import socket
 import re
+import threading
 from typing import Tuple, Dict
 
 from core.models import RequestInfo
@@ -151,13 +152,28 @@ class RequestAnalyzer:
             return "连接服务器", addr, "{}连接到服务器".format(app_name), 0
         return "接收消息", addr, "{}接收了一条消息".format(app_name), 0
 
+    # DNS 反向查询超时控制
+    @staticmethod
+    def _reverse_dns_with_timeout(ip: str, timeout: float = 0.5) -> str:
+        """带超时的 DNS 反向查询，避免阻塞"""
+        result = [ip]  # 默认返回 IP
+
+        def _query():
+            try:
+                result[0] = socket.gethostbyaddr(ip)[0]
+            except Exception:
+                pass
+
+        thread = threading.Thread(target=_query, daemon=True)
+        thread.start()
+        thread.join(timeout)
+        return result[0]
+
     def _analyze_browser(
         self, app_name, remote_ip, remote_port, direction, bytes_sent, bytes_recv
     ) -> Tuple:
-        try:
-            hostname = socket.gethostbyaddr(remote_ip)[0]
-        except Exception:
-            hostname = remote_ip
+        # 使用带超时的 DNS 反向查询
+        hostname = self._reverse_dns_with_timeout(remote_ip, timeout=0.5)
 
         action_type, description = "访问网站", "{} 访问了 {}".format(app_name, hostname)
         for pattern, svc in self.DOMAIN_PATTERNS.items():

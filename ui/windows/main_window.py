@@ -492,9 +492,17 @@ class MainWindow(QMainWindow):
             self._quit()
 
     def _logout(self):
+        # 停止监控线程（安全退出）
         if self.monitor_thread and self.monitor_thread.isRunning():
             self.monitor_thread.stop_request()
-            self.monitor_thread.wait(2000)
+            self.monitor_thread.wait(5000)
+            # 断开信号槽连接
+            try:
+                self.monitor_thread.new_connection.disconnect(self._on_new_conn)
+                self.monitor_thread.started.disconnect()
+                self.monitor_thread.finished.disconnect(self._on_thread_stopped)
+            except Exception:
+                pass
             self.monitor_thread = None
         self._monitoring = False
         self.hide()
@@ -538,19 +546,55 @@ class MainWindow(QMainWindow):
 
     # ── 退出 ─────────────────────────────────────────────────
     def _quit(self):
-        if self.monitor_thread:
+        """完全退出程序"""
+        # 1. 停止监控线程（安全退出，不使用 terminate）
+        if self.monitor_thread and self.monitor_thread.isRunning():
             self.monitor_thread.stop_request()
+            # 等待线程正常结束（最多5秒）
+            if self.monitor_thread.wait(5000):
+                print("[MainWindow] 监控线程正常退出")
+            else:
+                print("[MainWindow] 警告：监控线程退出超时，但将继续清理资源")
+            # 断开信号槽连接
+            try:
+                self.monitor_thread.new_connection.disconnect(self._on_new_conn)
+                self.monitor_thread.started.disconnect()
+                self.monitor_thread.finished.disconnect(self._on_thread_stopped)
+            except Exception:
+                pass
+            self.monitor_thread = None
+
+        # 2. 隐藏托盘图标
         if hasattr(self, "tray") and self.tray:
             self.tray.hide()
-        from PyQt6.QtWidgets import QApplication
-        QApplication.quit()
+
+        # 3. 停止所有定时器
+        if hasattr(self, "_stats_timer") and self._stats_timer:
+            self._stats_timer.stop()
+        if hasattr(self, "_archive_timer") and self._archive_timer:
+            self._archive_timer.stop()
+
+        # 4. 刷新归档缓冲
+        if hasattr(self, "archive_manager"):
+            try:
+                self.archive_manager._flush_buffer()
+            except Exception:
+                pass
+
+        # 5. 完全退出程序
+        app = QApplication.instance()
+        if app:
+            app.quit()
+        sys.exit(0)
 
     def closeEvent(self, event):
+        """窗口关闭按钮被点击时触发"""
         reply = QMessageBox.question(
             self, "确认退出", "确定要退出网络监控系统吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
+            # _quit() 会调用 sys.exit(0)，这里接受事件即可
             self._quit()
             event.accept()
         else:

@@ -77,27 +77,31 @@ class DatabaseManager:
     def get_user(self, username: str) -> Optional[tuple]:
         """按用户名查询用户行，不存在返回 None"""
         con = sqlite3.connect(self.db_path)
-        c = con.cursor()
-        c.execute("SELECT * FROM users WHERE username=?", (username,))
-        row = c.fetchone()
-        con.close()
-        return row
+        try:
+            c = con.cursor()
+            c.execute("SELECT * FROM users WHERE username=?", (username,))
+            row = c.fetchone()
+            return row
+        finally:
+            con.close()
 
     def set_totp_secret(self, username: str, secret: str):
         """绑定 TOTP 密钥"""
         con = sqlite3.connect(self.db_path)
-        con.execute(
-            "UPDATE users SET totp_secret=? WHERE username=?", (secret, username)
-        )
-        con.commit()
-        con.close()
+        try:
+            con.execute(
+                "UPDATE users SET totp_secret=? WHERE username=?", (secret, username)
+            )
+            con.commit()
+        finally:
+            con.close()
 
     # ── 连接记录相关 ─────────────────────────────────────────
     def add_connection(self, record: "ConnectionRecord | dict"):
         """插入一条连接记录，接受 ConnectionRecord 或字典"""
         d = record.to_dict() if isinstance(record, ConnectionRecord) else record
+        con = sqlite3.connect(self.db_path)
         try:
-            con = sqlite3.connect(self.db_path)
             con.execute(
                 """INSERT INTO connections
                    (timestamp, local_ip, local_port, remote_ip, remote_port,
@@ -121,46 +125,40 @@ class DatabaseManager:
                 ),
             )
             con.commit()
-            con.close()
         except Exception as e:
             print("[DatabaseManager] 写入错误:", e)
+        finally:
+            con.close()
 
     def get_today_stats(self) -> TodayStats:
-        """查询今日统计快照"""
+        """查询今日统计快照 - 单次查询优化"""
         today = date.today().strftime("%Y-%m-%d")
+        con = sqlite3.connect(self.db_path)
         try:
-            con = sqlite3.connect(self.db_path)
+            con.row_factory = sqlite3.Row
             c = con.cursor()
+            # 使用单次查询 + 条件聚合代替 4 次查询
             c.execute(
-                "SELECT COUNT(*) FROM connections WHERE timestamp LIKE ?",
-                (today + "%",),
+                """SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) as outbound,
+                    SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) as inbound,
+                    SUM(CASE WHEN risk_level>=3 THEN 1 ELSE 0 END) as risk_high
+                FROM connections
+                WHERE DATE(timestamp) = ?""",
+                (today,),
             )
-            total = c.fetchone()[0]
-            c.execute(
-                "SELECT COUNT(*) FROM connections "
-                "WHERE timestamp LIKE ? AND direction='outbound'",
-                (today + "%",),
-            )
-            outbound = c.fetchone()[0]
-            c.execute(
-                "SELECT COUNT(*) FROM connections "
-                "WHERE timestamp LIKE ? AND direction='inbound'",
-                (today + "%",),
-            )
-            inbound = c.fetchone()[0]
-            c.execute(
-                "SELECT COUNT(*) FROM connections "
-                "WHERE timestamp LIKE ? AND risk_level>=3",
-                (today + "%",),
-            )
-            risk_high = c.fetchone()[0]
-            con.close()
+            row = c.fetchone()
             return TodayStats(
-                total=total, outbound=outbound,
-                inbound=inbound, risk_high=risk_high
+                total=row["total"] or 0,
+                outbound=row["outbound"] or 0,
+                inbound=row["inbound"] or 0,
+                risk_high=row["risk_high"] or 0
             )
         except Exception:
             return TodayStats()
+        finally:
+            con.close()
 
     def query_high_risk(self, limit: int = 500) -> List[dict]:
         """查询今日高风险连接（risk_level >= 3）"""
@@ -170,18 +168,19 @@ class DatabaseManager:
 
     def _query_today(self, where_extra: str, limit: int = 500) -> List[dict]:
         today = date.today().strftime("%Y-%m-%d")
+        con = sqlite3.connect(self.db_path)
         try:
-            con = sqlite3.connect(self.db_path)
             con.row_factory = sqlite3.Row
             c = con.cursor()
             c.execute(
                 "SELECT * FROM connections "
-                "WHERE timestamp LIKE ? AND {} "
+                "WHERE DATE(timestamp) = ? AND {} "
                 "ORDER BY timestamp DESC LIMIT {}".format(where_extra, limit),
-                (today + "%",),
+                (today,),
             )
             rows = [dict(r) for r in c.fetchall()]
-            con.close()
             return rows
         except Exception:
             return []
+        finally:
+            con.close()

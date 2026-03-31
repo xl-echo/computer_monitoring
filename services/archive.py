@@ -26,13 +26,22 @@ class ArchiveManager:
       logs/monitor_YYYY-MM-DD.txt
 
     每条记录包含：时间、应用、行为、通俗解读、请求/响应描述、原始参数。
+    使用批量写入缓冲，每 10 条或每 5 秒写入一次，性能优化。
     """
+
+    # 缓冲配置
+    _BUFFER_SIZE = 10      # 每 10 条写一次
+    _BUFFER_TIMEOUT = 5.0  # 每 5 秒写一次
 
     def __init__(self, log_dir: str):
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
         self._today_str: str = ""
         self._today_file: str = ""
+        self._buffer: list = []  # 记录缓冲
+        self._last_write_time: float = 0  # 上次写入时间戳
+        import time
+        self._time_module = time
 
     # ── 内部工具 ─────────────────────────────────────────────
     def _get_today_file(self) -> str:
@@ -53,9 +62,8 @@ class ArchiveManager:
 
     # ── 写入单条记录 ─────────────────────────────────────────
     def write_record(self, d: dict):
-        """将一条连接记录追加写入当日归档文件"""
+        """将一条连接记录追加写入当日归档文件（使用缓冲机制）"""
         try:
-            fp = self._get_today_file()
             direction_cn = "向外发送" if d.get("direction") == "outbound" else "接收数据"
             risk_level = d.get("risk_level", 0)
             risk_text = RISK_LABELS[min(risk_level, 4)]
@@ -104,10 +112,47 @@ class ArchiveManager:
                 rip=d.get("remote_ip", ""),
                 rport=d.get("remote_port", ""),
             )
-            with open(fp, "a", encoding="utf-8") as f:
-                f.write(record + "\n")
+
+            # 加入缓冲
+            self._buffer.append(record)
+
+            # 判断是否需要立即写入
+            should_flush = False
+            now = self._time_module.time()
+            if len(self._buffer) >= self._BUFFER_SIZE:
+                should_flush = True  # 缓冲满，立即写入
+            elif now - self._last_write_time >= self._BUFFER_TIMEOUT:
+                should_flush = True  # 超时，立即写入
+
+            if should_flush:
+                self._flush_buffer()
+
         except Exception as e:
             print("[ArchiveManager] 归档错误:", e)
+
+    def _flush_buffer(self):
+        """将缓冲区所有记录写入文件"""
+        if not self._buffer:
+            return
+
+        try:
+            fp = self._get_today_file()
+            with open(fp, "a", encoding="utf-8") as f:
+                for record in self._buffer:
+                    f.write(record + "\n")
+            self._buffer.clear()
+            self._last_write_time = self._time_module.time()
+        except Exception as e:
+            print("[ArchiveManager] 刷新缓冲错误:", e)
+
+    def __del__(self):
+        """析构时确保缓冲写入"""
+        if self._buffer:
+            try:
+                self._flush_buffer()
+            except Exception:
+                # 如果目录已被删除，忽略错误
+                pass
 
     # ── 查询归档文件列表 ─────────────────────────────────────
     def list_archive_files(self) -> List[str]:

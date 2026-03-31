@@ -27,12 +27,14 @@ class RiskListDialog(QDialog):
     """
 
     PAGE_SIZE = 20
+    DB_LIMIT = 500  # 数据库查询限制
 
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
         self._db_path = db_path
         self._page = 0
         self._all_rows: list = []
+        self._total_count = 0  # 总记录数
 
         self.setWindowTitle("🔴 高风险连接列表（今日）")
         self.setMinimumSize(900, 600)
@@ -105,23 +107,50 @@ class RiskListDialog(QDialog):
     # ── 数据加载 ─────────────────────────────────────────────
     def _load_data(self):
         today = date.today().strftime("%Y-%m-%d")
+        con = sqlite3.connect(self._db_path)
         try:
-            con = sqlite3.connect(self._db_path)
             con.row_factory = sqlite3.Row
             c = con.cursor()
+
+            # 先查询总数
+            c.execute(
+                "SELECT COUNT(*) as cnt FROM connections "
+                "WHERE DATE(timestamp) = ? AND risk_level>=3",
+                (today,),
+            )
+            self._total_count = c.fetchone()["cnt"] or 0
+
+            # 加载第一页数据
+            self._load_page_data(0)
+
+        except Exception as e:
+            print("[RiskListDialog] 加载数据失败:", e)
+            self._total_count = 0
+        finally:
+            con.close()
+
+    def _load_page_data(self, page_num: int):
+        """加载指定页的数据"""
+        today = date.today().strftime("%Y-%m-%d")
+        con = sqlite3.connect(self._db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            c = con.cursor()
+
+            offset = page_num * self.PAGE_SIZE
             c.execute(
                 "SELECT * FROM connections "
-                "WHERE timestamp LIKE ? AND risk_level>=3 "
-                "ORDER BY timestamp DESC LIMIT 500",
-                (today + "%",),
+                "WHERE DATE(timestamp) = ? AND risk_level>=3 "
+                "ORDER BY timestamp DESC "
+                "LIMIT ? OFFSET ?",
+                (today, self.PAGE_SIZE, offset),
             )
             self._all_rows = [dict(r) for r in c.fetchall()]
-            con.close()
-        except Exception:
+        except Exception as e:
+            print("[RiskListDialog] 加载页数据失败:", e)
             self._all_rows = []
-        self._count_lbl.setText("共 {} 条（今日）".format(len(self._all_rows)))
-        self._page = 0
-        self._render_page()
+        finally:
+            con.close()
 
     # ── 渲染当前页 ───────────────────────────────────────────
     def _render_page(self):
@@ -169,11 +198,14 @@ class RiskListDialog(QDialog):
     def _prev_page(self):
         if self._page > 0:
             self._page -= 1
+            self._load_page_data(self._page)
             self._render_page()
 
     def _next_page(self):
-        if (self._page + 1) * self.PAGE_SIZE < len(self._all_rows):
+        max_page = (self._total_count + self.PAGE_SIZE - 1) // self.PAGE_SIZE - 1
+        if self._page < max_page:
             self._page += 1
+            self._load_page_data(self._page)
             self._render_page()
 
     def _on_dblclick(self, index):
